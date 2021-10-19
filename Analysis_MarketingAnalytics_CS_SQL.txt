@@ -1,0 +1,468 @@
+Solution Plan
+
+Category Insights
+
+1. Create a base dataset and join all relevant tables
+complete_joint_dataset
+
+2. Calculate customer rental counts for each category
+category_counts
+
+3. Aggregate all customer total films watched
+total_counts
+
+4. Identify the top 2 categories for each customer
+top_categories
+
+5. Calculate each category’s aggregated average rental count
+average_category_count
+6. Calculate the percentile metric for each customer’s top category film count
+top_category_percentile
+
+7. Generate our first top category insights table using all previously generated tables
+top_category_insights
+
+8. Generate the 2nd category insights
+second_category_insights
+
+Category Recommendations
+
+1. Generate a summarised film count table with the category included, we will use this table to rank the films by popularity
+film_counts
+
+2. Create a previously watched films for the top 2 categories to exclude for each customer
+category_film_exclusions
+3. Finally perform an anti join from the relevant category films on the exclusions and use window functions to keep the top 3 from each category by popularity - be sure to split out the recommendations by category ranking
+category_recommendations
+
+Actor Insights
+
+1. Create a new base dataset which has a focus on the actor instead of category
+actor_joint_table
+2. Identify the top actor and their respective rental count for each customer based off the ranked rental counts
+top_actor_counts
+
+Actor Recommendations
+
+1. Generate total actor rental counts to use for film popularity ranking in later steps
+actor_film_counts
+
+2. Create an updated film exclusions table which includes the previously watched films like we had for the category recommendations - but this time we need to also add in the films which were previously recommended
+actor_film_exclusions
+
+Applied the same ANTI JOIN technique and use a window function to identify the 3 valid film recommendations for our customers
+actor_recommendations
+
+
+CATEGORY INSIGHTS ANALYSIS
+
+Create Base Dataset
+
+created a complete_joint_dataset which joins multiple tables together after analysing the relationships between each table to confirm if there was a one-to-many, 
+many-to-one or a many-to-many relationship for each of the join columns.
+
+Also included the rental_date column to help us split ties for rankings which had the same count of rentals at a customer level - 
+this helps us prioritise film categories which were more recently viewed.
+
+----------------------------------------------------------
+DROP TABLE IF EXISTS complete_joint_dataset;
+CREATE TEMP TABLE complete_joint_dataset AS
+SELECT
+  rental.customer_id,
+  inventory.film_id,
+  film.title,
+  category.name AS category_name,
+  -- also included rental_date for sorting purposes
+  rental.rental_date
+FROM dvd_rentals.rental
+INNER JOIN dvd_rentals.inventory
+  ON rental.inventory_id = inventory.inventory_id
+INNER JOIN dvd_rentals.film
+  ON inventory.film_id = film.film_id
+INNER JOIN dvd_rentals.film_category
+  ON film.film_id = film_category.film_id
+INNER JOIN dvd_rentals.category
+  ON film_category.category_id = category.category_id;
+------------------------------------------------------------
+Category Counts
+
+Created a follow-up table which uses the complete_joint_dataset to aggregate our data and generate a rental_count and the latest rental_date for our 
+ranking purposes downstream.
+
+-------------------------------------------------------------
+DROP TABLE IF EXISTS category_counts;
+CREATE TEMP TABLE category_counts AS
+SELECT
+  customer_id,
+  category_name,
+  COUNT(*) AS rental_count,
+  MAX(rental_date) AS latest_rental_date
+FROM complete_joint_dataset
+GROUP BY
+  customer_id,
+  category_name;
+---------------------------------------------------------------
+Total Counts
+
+use this category_counts table to generate our total_counts table.
+--------------------------------------------------------------
+DROP TABLE IF EXISTS total_counts;
+CREATE TEMP TABLE total_counts AS
+SELECT
+  customer_id,
+  SUM(rental_count) AS total_count
+FROM category_counts
+GROUP BY
+  customer_id;
+------------------------------------------------------------------
+Top Categories
+
+------------------------------------------------------------------
+DROP TABLE IF EXISTS top_categories;
+CREATE TEMP TABLE top_categories AS
+WITH ranked_cte AS (
+  SELECT
+    customer_id,
+    category_name,
+    rental_count,
+    DENSE_RANK() OVER (
+      PARTITION BY customer_id
+      ORDER BY
+        rental_count DESC,
+        latest_rental_date DESC,
+        category_name
+    ) AS category_rank
+  FROM category_counts
+)
+SELECT * FROM ranked_cte
+WHERE category_rank <= 2;
+---------------------------------------------------------------------
+Average Category Count
+---------------------------------------------------------------------
+DROP TABLE IF EXISTS average_category_count;
+CREATE TEMP TABLE average_category_count AS
+SELECT
+  category_name,
+  FLOOR(AVG(rental_count)) AS category_average
+FROM category_counts
+GROUP BY category_name;
+------------------------------------------------------------------------
+Top Category Percentile
+----------------------------------------------------------------------
+DROP TABLE IF EXISTS top_category_percentile;
+CREATE TEMP TABLE top_category_percentile AS
+WITH calculated_cte AS (
+SELECT
+  top_categories.customer_id,
+  top_categories.category_name AS top_category_name,
+  top_categories.rental_count,
+  category_counts.category_name,
+  top_categories.category_rank,
+  PERCENT_RANK() OVER (
+    PARTITION BY category_counts.category_name
+    ORDER BY category_counts.rental_count DESC
+  ) AS raw_percentile_value
+FROM category_counts
+LEFT JOIN top_categories
+  ON category_counts.customer_id = top_categories.customer_id
+)
+SELECT
+  customer_id,
+  category_name,
+  rental_count,
+  category_rank,
+  CASE
+    WHEN ROUND(100 * raw_percentile_value) = 0 THEN 1
+    ELSE ROUND(100 * raw_percentile_value)
+  END AS percentile
+FROM calculated_cte
+WHERE
+  category_rank = 1
+  AND top_category_name = category_name;
+-------------------------------------------------------------------
+1st Category Insights
+
+compile all of our previous temporary tables into a single category_insights table with what we have so far - 
+we will use our most recently generated top_category_percentile table as the base and LEFT JOIN our average table 
+to generate an average_comparison column.
+
+---------------------------------------------------------------------
+DROP TABLE IF EXISTS first_category_insights;
+CREATE TEMP TABLE first_category_insights AS
+SELECT
+  base.customer_id,
+  base.category_name,
+  base.rental_count,
+  base.rental_count - average.category_average AS average_comparison,
+  base.percentile
+FROM top_category_percentile AS base
+LEFT JOIN average_category_count AS average
+  ON base.category_name = average.category_name;
+---------------------------------------------------------------------
+2nd Category Insights
+
+Our second ranked category insight is pretty simple as we only need our top_categories table and the total_counts table to process our insights.
+The only thing to note here is that we’ll need to cast one of our fraction components of our total_percentage column 
+to avoid the dreaded integer floor division!
+---------------------------------------------------------------------
+DROP TABLE IF EXISTS second_category_insights;
+CREATE TEMP TABLE second_category_insights AS
+SELECT
+  top_categories.customer_id,
+  top_categories.category_name,
+  top_categories.rental_count,
+  -- need to cast as NUMERIC to avoid INTEGER floor division!
+  ROUND(
+    100 * top_categories.rental_count::NUMERIC / total_counts.total_count
+  ) AS total_percentage
+FROM top_categories
+LEFT JOIN total_counts
+  ON top_categories.customer_id = total_counts.customer_id
+WHERE category_rank = 2;
+---------------------------------------------------------------------
+Category Recommendations
+Film Counts
+first generate another total rental count aggregation from our base table complete_joint_dataset - however this time we will use the film_id and title 
+instead of the category - we still need to keep the category_name in our aggregation - so we will need to use a window function instead of a group by 
+to perform this step.
+
+The DISTINCT is really important for this query - if we were to omit it we would end up with duplicates in our table,
+which is definitely not what we want!
+
+-------------------------------------------------------------------
+DROP TABLE IF EXISTS film_counts;
+CREATE TEMP TABLE film_counts AS
+SELECT DISTINCT
+  film_id,
+  title,
+  category_name,
+  COUNT(*) OVER (
+    PARTITION BY film_id
+  ) AS rental_count
+FROM complete_joint_dataset;
+----------------------------------------------------------------------
+Category Film Exclusions
+For the next step in our recommendation analysis - we will need to generate a table with all of our customer’s previously watched films so we don’t recommend them something which they’ve already seen before.
+
+We will use the complete_joint_dataset base table to get this information
+-------------------------------------------------------------------------
+DROP TABLE IF EXISTS category_film_exclusions;
+CREATE TEMP TABLE category_film_exclusions AS
+SELECT DISTINCT
+  customer_id,
+  film_id
+FROM complete_joint_dataset;
+--------------------------------------------------------------------------
+
+Final Category Recommendations
+we need to perform an ANTI JOIN on our category_film_exclusions table using a WHERE NOT EXISTS SQL implementation for our top 2 categories found in the top_categories
+table we generated a few steps prior.
+
+After this exclusion - we will then perform a window function to select the top 3 films for each of the top 2 categories per customer. 
+To avoid random ties - we will sort by the title alphabetically in case the rental_count values are equal in the ORDER BY clause for our window function.
+
+We also need to keep our category_rank column in our final output so we can easily identify our recommendations for each customer’s preferred categories.
+---------------------------------------------------------------------------
+DROP TABLE IF EXISTS category_recommendations;
+CREATE TEMP TABLE category_recommendations AS
+WITH ranked_films_cte AS (
+  SELECT
+    top_categories.customer_id,
+    top_categories.category_name,
+    top_categories.category_rank,
+    -- why do we keep this `film_id` column you might ask?
+    -- you will find out later on during the actor level recommendations!
+    film_counts.film_id,
+    film_counts.title,
+    film_counts.rental_count,
+    DENSE_RANK() OVER (
+      PARTITION BY
+        top_categories.customer_id,
+        top_categories.category_rank
+      ORDER BY
+        film_counts.rental_count DESC,
+        film_counts.title
+    ) AS reco_rank
+  FROM top_categories
+  INNER JOIN film_counts
+    ON top_categories.category_name = film_counts.category_name
+  -- This is a tricky anti-join where we need to "join" on 2 different tables!
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM category_film_exclusions
+    WHERE
+      category_film_exclusions.customer_id = top_categories.customer_id AND
+      category_film_exclusions.film_id = film_counts.film_id
+  )
+)
+SELECT * FROM ranked_films_cte
+WHERE reco_rank <= 3;
+----------------------------------------------------------------------------------
+Actor Insights
+Actor Joint Table
+For this entire analysis on actors - we will need to create a new base table as we will need to introduce the dvd_rentals.film_actor and 
+dvd_rentals.actor tables to extract all the required data points we need for the final output.
+
+----------------------------------------------------------------------------------
+-- Actor Insights and Recommendations
+DROP TABLE IF EXISTS actor_joint_dataset;
+CREATE TEMP TABLE actor_joint_dataset AS
+SELECT
+  rental.customer_id,
+  rental.rental_id,
+  rental.rental_date,
+  film.film_id,
+  film.title,
+  actor.actor_id,
+  actor.first_name,
+  actor.last_name
+FROM dvd_rentals.rental
+INNER JOIN dvd_rentals.inventory
+  ON rental.inventory_id = inventory.inventory_id
+INNER JOIN dvd_rentals.film
+  ON inventory.film_id = film.film_id
+-- different to our previous base table as we know use actor tables
+INNER JOIN dvd_rentals.film_actor
+  ON film.film_id = film_actor.film_id
+INNER JOIN dvd_rentals.actor
+  ON film_actor.actor_id = actor.actor_id;
+----------------------------------------------------------------------------
+
+Top Actor Counts
+We can now generate our rental counts per actor and since we are only interested in the top actor for each of our customers - 
+we can also perform a filter step to just keep the top actor records and counts for our downstream insights.
+
+We will break up our analysis into separate CTEs so we can see the entire process without introducing more complex window functions 
+within the initial GROUP BY queries.
+
+--------------------------------------------------------------------------
+
+DROP TABLE IF EXISTS top_actor_counts;
+CREATE TEMP TABLE top_actor_counts AS
+WITH actor_counts AS (
+  SELECT
+    customer_id,
+    actor_id,
+    first_name,
+    last_name,
+    COUNT(*) AS rental_count,
+    -- we also generate the latest_rental_date just like our category insight
+    MAX(rental_date) AS latest_rental_date
+  FROM actor_joint_dataset
+  GROUP BY
+    customer_id,
+    actor_id,
+    first_name,
+    last_name
+),
+ranked_actor_counts AS (
+  SELECT
+    actor_counts.*,
+    DENSE_RANK() OVER (
+      PARTITION BY customer_id
+      ORDER BY
+        rental_count DESC,
+        latest_rental_date DESC,
+        -- just in case we have any further ties, we'll throw in the names too!
+        first_name,
+        last_name
+    ) AS actor_rank
+  FROM actor_counts
+)
+SELECT
+  customer_id,
+  actor_id,
+  first_name,
+  last_name,
+  rental_count
+FROM ranked_actor_counts
+WHERE actor_rank = 1;
+----------------------------------------------------------------------
+
+Actor Recommendations
+Actor Film Counts
+We need to generate aggregated total rental counts across all customers by actor_id and film_id so we can join onto our top_actor_counts table 
+Since we have now introduced many many more rows than actual rentals - we will need to perform a split aggregation on our table and perform an additional left join back to our base table in order to obtain the right rental_count values.
+
+The DISTINCT is really important in the final part of the CTE as it will remove duplicates which will have a huge impact on our downstream joins later!
+---------------------------------------------------------------------
+DROP TABLE IF EXISTS actor_film_counts;
+CREATE TEMP TABLE actor_film_counts AS
+WITH film_counts AS (
+  SELECT
+    film_id,
+    COUNT(DISTINCT rental_id) AS rental_count
+  FROM actor_joint_dataset
+  GROUP BY film_id
+)
+SELECT DISTINCT
+  actor_joint_dataset.film_id,
+  actor_joint_dataset.actor_id,
+  -- why do we keep the title here? can you figure out why?
+  actor_joint_dataset.title,
+  film_counts.rental_count
+FROM actor_joint_dataset
+LEFT JOIN film_counts
+  ON actor_joint_dataset.film_id = film_counts.film_id;
+
+-------------------------------------------------------------------
+Actor Film Exclusions
+DROP TABLE IF EXISTS actor_film_exclusions;
+CREATE TEMP TABLE actor_film_exclusions AS
+-- repeat the first steps as per the category exclusions
+-- we'll use our original complete_joint_dataset as the base here
+-- can you figure out why???
+(
+  SELECT DISTINCT
+    customer_id,
+    film_id
+  FROM complete_joint_dataset
+)
+-- we use a UNION to combine the previously watched and the recommended films!
+UNION
+(
+  SELECT DISTINCT
+    customer_id,
+    film_id
+  FROM category_recommendations
+);
+-------------------------------------------------------------------
+Final Actor Recommendations
+-------------------------------------------------------------------
+ROP TABLE IF EXISTS actor_recommendations;
+CREATE TEMP TABLE actor_recommendations AS
+WITH ranked_actor_films_cte AS (
+  SELECT
+    top_actor_counts.customer_id,
+    top_actor_counts.first_name,
+    top_actor_counts.last_name,
+    top_actor_counts.rental_count,
+    actor_film_counts.title,
+    actor_film_counts.film_id,
+    actor_film_counts.actor_id,
+    DENSE_RANK() OVER (
+      PARTITION BY
+        top_actor_counts.customer_id
+      ORDER BY
+        actor_film_counts.rental_count DESC,
+        actor_film_counts.title
+    ) AS reco_rank
+  FROM top_actor_counts
+  INNER JOIN actor_film_counts
+    -- join on actor_id instead of category_name!
+    ON top_actor_counts.actor_id = actor_film_counts.actor_id
+  -- This is a tricky anti-join where we need to "join" on 2 different tables!
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM actor_film_exclusions
+    WHERE
+      actor_film_exclusions.customer_id = top_actor_counts.customer_id AND
+      actor_film_exclusions.film_id = actor_film_counts.film_id
+  )
+)
+SELECT * FROM ranked_actor_films_cte
+WHERE reco_rank <= 3;
+----------------------------------------------------------------
+
+
+
