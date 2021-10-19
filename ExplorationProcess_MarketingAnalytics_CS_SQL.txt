@@ -97,3 +97,44 @@ UNION
 
 Performed this same analysis for all of our tables within our core tables and concluded that the distribution for each of the join keys are as expected 
 and are similar to what we see for these first 2 tables.
+------------------------------------------------------------------------------------------------------------------------------------------------------
+Join Column Analysis Example 2
+
+We also need to investigate the relationships between the actor_id and film_id columns within the dvd_rentals.film_actor table.
+
+hypothesise that one single actor might show up in multiple films and one film can have multiple actors. This is known as a many-to-many relationship.
+
+Let’s perform some analysis on the data tables to see if our hunch is on point:
+
+WITH actor_film_counts AS (
+  SELECT
+    actor_id,
+    COUNT(DISTINCT film_id) AS film_count
+  FROM dvd_rentals.film_actor
+  GROUP BY actor_id
+)
+SELECT
+  film_count,
+  COUNT(*) AS total_actors
+FROM actor_film_counts
+GROUP BY film_count
+ORDER BY film_count DESC;
+
+Let’s also confirm that there are multiple actors per film 
+
+WITH film_actor_counts AS (
+  SELECT
+    film_id,
+    COUNT(DISTINCT actor_id) AS actor_count
+  FROM dvd_rentals.film_actor
+  GROUP BY film_id
+)
+SELECT
+  actor_count,
+  COUNT(*) AS total_films
+FROM film_actor_counts
+GROUP BY actor_count
+ORDER BY actor_count DESC;
+
+we can see that there is indeed a many to many relationship of the film_id and the actor_id columns within the dvd_rentals.film_actor table 
+so we must take extreme care when we are joining these 2 tables as part of our analysis 
