@@ -38,8 +38,9 @@ Provided with the entity relationship diagram (ERD) as shown below with all fore
 ![image](https://user-images.githubusercontent.com/89623051/137928027-8871319e-3d51-4d06-9ea5-aaba3777b241.png)
 
 
-**Exploration
-**
+****Exploration
+****
+
 We have a total of 7 tables in our ERD for this case study highlighting the important columns which we should use to join our tables for our data analysis task.
 
 Table Investigation
