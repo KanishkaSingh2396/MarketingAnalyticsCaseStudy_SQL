@@ -97,6 +97,7 @@ Although there is a single inventory_id record which is missing from the dvd_ren
 as it seems that some inventory might just never be rented out to customers at the retail rental stores.
 
 Finally - 
+
 let’s confirm that both left and inner joins do not differ at all when we look at the resulting row counts from the joint tables:
 
 DROP TABLE IF EXISTS left_rental_join;
@@ -119,7 +120,7 @@ FROM dvd_rentals.rental
 INNER JOIN dvd_rentals.inventory
   ON rental.inventory_id = inventory.inventory_id;
 
--- Output SQL
+
 (
   SELECT
     'left join' AS join_type,
