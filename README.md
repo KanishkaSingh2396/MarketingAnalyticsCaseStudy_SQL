@@ -1,6 +1,8 @@
 # MarketingAnalyticsCaseStudy_SQL
 To help marketing team in their first email campaign by providing necessary insights using advance SQL queries.
+
 Problem Statement:
+
 Generate the analytical inputs required to drive DVD Rental Co marketing team's very first customer email campaign.
 The marketing team expects their personalised emails to drive increased sales and engagement from the DVD Rental Co customer base.
 
